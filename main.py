@@ -3,7 +3,7 @@ warnings.filterwarnings("ignore")
 
 
 
-from configs.config_use import cfg
+from configs.config import cfg
 
 import os, gc, numpy as np, pandas as pd, torch, evaluate, nltk
 from datasets import Dataset
