@@ -16,7 +16,7 @@ class Config:
     EARLY_STOPPING_PATIENCE = 3
 
     # --- TDA Settings ---
-    PCA_COMPONENTS = 10
+    PCA_COMPONENTS = 200
     TDA_RESOLUTION = 50
     FASTTEXT_DIM = 100
 
