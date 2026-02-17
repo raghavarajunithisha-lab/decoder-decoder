@@ -12,7 +12,6 @@ from transformers.utils import logging as hf_logging
 
 hf_logging.set_verbosity_error()
 
-# --- TDA Imports ---
 try:
     import gudhi
     from gudhi.representations import DiagramScaler, Landscape
@@ -23,13 +22,12 @@ try:
 except ImportError:
     pass
 
-# --- 1. Robust Logger ---
 class ResearchLogger(TrainerCallback):
     def __init__(self, total_epochs):
         self.total_epochs = total_epochs
 
     def on_epoch_end(self, args, state, control, logs=None, **kwargs):
-        if logs is None: return # Fixes the NoneType Error
+        if logs is None: return 
         
         epoch = int(state.epoch)
         train_loss = logs.get("loss", "N/A")
@@ -41,7 +39,6 @@ class ResearchLogger(TrainerCallback):
         
         print(f"\n[SUMMARY] Epoch {epoch}/{self.total_epochs} | Train Loss: {t_str} | Eval Loss: {v_str}")
 
-# --- 2. TDA Pipeline ---
 def apply_tda_pipeline(train_df, test_df, text_cols):
     nltk.download("punkt_tab", quiet=True)
     
@@ -165,13 +162,11 @@ for ds_info in DATASETS:
             train_tok = train_tok.map(tok_fn, batched=True, remove_columns=train_tok.column_names)
             test_tok = test_tok.map(tok_fn, batched=True, remove_columns=test_tok.column_names)
 
-            # Load model in Float32 to match your main.py success
             model = AutoModelForCausalLM.from_pretrained(m_id, dtype=torch.float32, device_map="auto")
             
             if "Qwen" in m_id: 
                 model.resize_token_embeddings(len(tokenizer))
 
-            # Apply LoRA logic exactly from main.py
             if m_key in ["TinyLlama", "Qwen"]:
                 lora_cfg = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, 
                                       target_modules=["q_proj", "v_proj"], task_type="CAUSAL_LM")

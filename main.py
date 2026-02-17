@@ -14,7 +14,7 @@ from peft import LoraConfig, get_peft_model
 from transformers import TrainerCallback
 
 from transformers import DataCollatorWithPadding
-# Optional imports (TDA)
+
 try:
     import gudhi
     from gudhi.representations import DiagramSelector, DiagramScaler, Clamping, Landscape
@@ -27,7 +27,7 @@ except ImportError:
 
 from transformers.utils import logging as hf_logging
 
-hf_logging.set_verbosity_error()        # or set_verbosity_warning()
+hf_logging.set_verbosity_error()       
 hf_logging.disable_progress_bar()
 
 
