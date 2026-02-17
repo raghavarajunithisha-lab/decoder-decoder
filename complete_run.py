@@ -34,6 +34,7 @@ class ResearchLogger(TrainerCallback):
         epoch = int(state.epoch)
         train_loss = logs.get("loss", "N/A")
         eval_loss = logs.get("eval_loss", "N/A")
+        print(f"\nEpoch {epoch}/{self.total_epochs}")
 
         t_str = f"{train_loss:.4f}" if isinstance(train_loss, (float, int)) else train_loss
         v_str = f"{eval_loss:.4f}" if isinstance(eval_loss, (float, int)) else eval_loss
@@ -103,7 +104,7 @@ DATASETS = [
 ]
 
 SEED = 42
-EPOCHS = 100
+EPOCHS = 2
 BATCH_SIZE = 1
 GRAD_ACCUM = 2
 
@@ -135,7 +136,7 @@ for ds_info in DATASETS:
                     "TinyLlama":"TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
                     "Qwen":"Qwen/Qwen1.5-0.5B-Chat"}[m_key]
             
-            df_raw = pd.read_csv(ds_info['path'])
+            df_raw = pd.read_csv(ds_info['path']).iloc[:100]
             train_df, test_df = train_test_split(df_raw, test_size=0.1, random_state=SEED)
             
             if tda_on:

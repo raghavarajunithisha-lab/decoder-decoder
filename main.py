@@ -242,8 +242,8 @@ use_fp16 = torch.cuda.is_available()
 training_args = TrainingArguments(
     output_dir=f"./{MODEL_CHOICE}-TDA-{USE_TDA}",
     eval_strategy="epoch",
-    logging_strategy="epoch",      # Changed from "epoch" to "steps"
-    disable_tqdm=True,             # THIS STOPS THE SCROLLING PROGRESS BAR
+    logging_strategy="epoch",      
+    disable_tqdm=True,            
     save_strategy="epoch",
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
@@ -263,7 +263,6 @@ data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
 class EpochBeginPrinter(TrainerCallback):
     def on_epoch_begin(self, args, state, control, **kwargs):
-        # state.epoch is a float; cast to int and +1 for human‑friendly display
         if state.epoch is not None:
             print(f"\n========== Epoch {int(state.epoch) + 1} ==========\n")
 
