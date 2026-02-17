@@ -1,11 +1,9 @@
-
-
 class Config:
     # --- Model & Data ---
-    MODEL_CHOICE = "distilgpt2"        # "distilgpt2", "gpt2-medium", "TinyLlama", "Qwen"
-    USE_TDA = False                    # True = enable TDA, False = disable
-    DATA_PATH = "data/preprocessed_MentalChat_df.csv"
-    TEXT_COLS = ("input", "output")
+    MODEL_CHOICE = "TinyLlama"        # "distilgpt2", "gpt2-medium", "TinyLlama", "Qwen"
+    USE_TDA = True                    # True = enable TDA, False = disable
+    DATA_PATH = "data/preprocessed_counselchat_data_df.csv"
+    TEXT_COLS = ("questionText", "answerText")
 
     # --- Training ---
     EPOCHS = 100

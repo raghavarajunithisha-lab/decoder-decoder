@@ -1,8 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore")
 
-
-
 from configs.config import cfg
 
 import os, gc, numpy as np, pandas as pd, torch, evaluate, nltk
@@ -13,8 +11,9 @@ from transformers import (
     Trainer, TrainingArguments, EarlyStoppingCallback
 )
 from peft import LoraConfig, get_peft_model
+from transformers import TrainerCallback
 
-
+from transformers import DataCollatorWithPadding
 # Optional imports (TDA)
 try:
     import gudhi
@@ -25,6 +24,11 @@ try:
     from nltk.tokenize import word_tokenize
 except ImportError:
     pass
+
+from transformers.utils import logging as hf_logging
+
+hf_logging.set_verbosity_error()        # or set_verbosity_warning()
+hf_logging.disable_progress_bar()
 
 
 
@@ -69,8 +73,6 @@ print(f"\n Fine-tuning: {MODEL_CHOICE} -> {model_name} (TDA = {USE_TDA})")
 
 df = pd.read_csv(DATA_PATH)
 assert all(c in df.columns for c in TEXT_COLS), f"Dataset must contain {TEXT_COLS}"
-
-# df = df.iloc[:2000]  # small subset
 
 train_df, test_df = train_test_split(df, test_size=0.1, random_state=SEED)
 train_dataset = Dataset.from_pandas(train_df.reset_index(drop=True))
@@ -218,7 +220,7 @@ print("Tokenization ready.")
 
 
 
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32, device_map="auto")
 
 if model_resize_needed:
     model.resize_token_embeddings(len(tokenizer))
@@ -240,7 +242,8 @@ use_fp16 = torch.cuda.is_available()
 training_args = TrainingArguments(
     output_dir=f"./{MODEL_CHOICE}-TDA-{USE_TDA}",
     eval_strategy="epoch",
-    logging_strategy="epoch",
+    logging_strategy="epoch",      # Changed from "epoch" to "steps"
+    disable_tqdm=True,             # THIS STOPS THE SCROLLING PROGRESS BAR
     save_strategy="epoch",
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
@@ -255,13 +258,23 @@ training_args = TrainingArguments(
     report_to="none"
 )
 
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+
+
+class EpochBeginPrinter(TrainerCallback):
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        # state.epoch is a float; cast to int and +1 for human‑friendly display
+        if state.epoch is not None:
+            print(f"\n========== Epoch {int(state.epoch) + 1} ==========\n")
+
 trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=train_tok,
     eval_dataset=test_tok,
-    tokenizer=tokenizer,
-    callbacks=[EarlyStoppingCallback(early_stopping_patience=EARLY_STOPPING_PATIENCE)]
+    data_collator=data_collator,
+    callbacks=[EarlyStoppingCallback(early_stopping_patience=EARLY_STOPPING_PATIENCE),
+               EpochBeginPrinter()]
 )
 
 trainer.train()
