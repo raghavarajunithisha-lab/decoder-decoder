@@ -133,7 +133,7 @@ for ds_info in DATASETS:
                     "TinyLlama":"TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
                     "Qwen":"Qwen/Qwen1.5-0.5B-Chat"}[m_key]
             
-            df_raw = pd.read_csv(ds_info['path']).iloc[:100]
+            df_raw = pd.read_csv(ds_info['path'])
             train_df, test_df = train_test_split(df_raw, test_size=0.1, random_state=SEED)
             
             if tda_on:
