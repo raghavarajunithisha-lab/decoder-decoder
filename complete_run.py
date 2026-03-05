@@ -101,7 +101,7 @@ DATASETS = [
 ]
 
 SEED = 42
-EPOCHS = 2
+EPOCHS = 100
 BATCH_SIZE = 1
 GRAD_ACCUM = 2
 
@@ -133,7 +133,7 @@ for ds_info in DATASETS:
                     "TinyLlama":"TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
                     "Qwen":"Qwen/Qwen1.5-0.5B-Chat"}[m_key]
             
-            df_raw = pd.read_csv(ds_info['path']).iloc[:100]
+            df_raw = pd.read_csv(ds_info['path']).dropna(subset=list(ds_info['cols']))
             train_df, test_df = train_test_split(df_raw, test_size=0.1, random_state=SEED)
             
             if tda_on:
@@ -146,10 +146,11 @@ for ds_info in DATASETS:
             def format_fn(ex):
                 tda_s = " ".join([f"<tda{i}:{v:.3f}>" for i, v in enumerate(ex.get('tda_compact', [0]*10))]) if tda_on else ""
                 u_text = f"{ex[ds_info['cols'][0]]} {tda_s}".strip()
+                ans_text = str(ex[ds_info['cols'][1]]) if ex[ds_info['cols'][1]] is not None else ""
                 if "Chat" in m_id or "Qwen" in m_id:
-                    msgs = [{"role":"user","content":u_text}, {"role":"assistant","content":ex[ds_info['cols'][1]]}]
+                    msgs = [{"role":"user","content":u_text}, {"role":"assistant","content":ans_text}]
                     return {"text": tokenizer.apply_chat_template(msgs, tokenize=False)}
-                return {"text": f"<|user|>: {u_text}\n<|assistant|>: {ex[ds_info['cols'][1]]}"}
+                return {"text": f"<|user|>: {u_text}\n<|assistant|>: {ans_text}"}
 
             train_tok = Dataset.from_pandas(train_df).map(format_fn)
             test_tok = Dataset.from_pandas(test_df).map(format_fn)
@@ -162,7 +163,9 @@ for ds_info in DATASETS:
             train_tok = train_tok.map(tok_fn, batched=True, remove_columns=train_tok.column_names)
             test_tok = test_tok.map(tok_fn, batched=True, remove_columns=test_tok.column_names)
 
-            model = AutoModelForCausalLM.from_pretrained(m_id, dtype=torch.float32, device_map="auto")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = AutoModelForCausalLM.from_pretrained(m_id, torch_dtype=torch.float32)
+            model = model.to(device)
             
             if "Qwen" in m_id: 
                 model.resize_token_embeddings(len(tokenizer))
