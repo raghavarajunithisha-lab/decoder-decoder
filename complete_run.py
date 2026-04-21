@@ -1,12 +1,13 @@
 import warnings
 warnings.filterwarnings("ignore")
-import os, gc, numpy as np, pandas as pd, torch, evaluate, nltk
+import os, gc, time, numpy as np, pandas as pd, torch, evaluate, nltk
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
 from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM,
-    Trainer, TrainingArguments, EarlyStoppingCallback, TrainerCallback
+    Trainer, TrainingArguments, EarlyStoppingCallback, TrainerCallback,
+    default_data_collator
 )
 from transformers.utils import logging as hf_logging
 
@@ -22,31 +23,37 @@ try:
 except ImportError:
     pass
 
+
 class ResearchLogger(TrainerCallback):
     def __init__(self, total_epochs):
         self.total_epochs = total_epochs
+        self.epoch_start = None
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        self.epoch_start = time.time()
 
     def on_epoch_end(self, args, state, control, logs=None, **kwargs):
-        if logs is None: return 
-        
+        elapsed = time.time() - self.epoch_start if self.epoch_start else 0
+        if logs is None: return
+
         epoch = int(state.epoch)
         train_loss = logs.get("loss", "N/A")
         eval_loss = logs.get("eval_loss", "N/A")
-        print(f"\nEpoch {epoch}/{self.total_epochs}")
 
         t_str = f"{train_loss:.4f}" if isinstance(train_loss, (float, int)) else train_loss
         v_str = f"{eval_loss:.4f}" if isinstance(eval_loss, (float, int)) else eval_loss
-        
-        print(f"\n[SUMMARY] Epoch {epoch}/{self.total_epochs} | Train Loss: {t_str} | Eval Loss: {v_str}")
+
+        print(f"\n[SUMMARY] Epoch {epoch}/{self.total_epochs} | Train Loss: {t_str} | Eval Loss: {v_str} | Time: {elapsed:.1f}s")
+
 
 def apply_tda_pipeline(train_df, test_df, text_cols):
     nltk.download("punkt_tab", quiet=True)
-    
+
     def get_features(target_df, fit_objs=None):
         df_copy = target_df.copy()
         patterns = df_copy[text_cols[0]].astype(str) + " " + df_copy[text_cols[1]].astype(str)
         tokenized = patterns.apply(word_tokenize).tolist()
-        
+
         if fit_objs is None:
             ft = FastText(sentences=tokenized, vector_size=100, window=5, min_count=1, workers=4)
         else:
@@ -62,7 +69,7 @@ def apply_tda_pipeline(train_df, test_df, text_cols):
 
         res = [diag_mean(s) for s in patterns]
         diags, means = zip(*res)
-        
+
         vectors = []
         for d in diags:
             try:
@@ -73,15 +80,15 @@ def apply_tda_pipeline(train_df, test_df, text_cols):
                 vectors.append(np.pad(L, (0, max(0, 50 - len(L))))[:50])
             except:
                 vectors.append(np.zeros(50))
-        
+
         tda_mat = np.vstack(vectors)
         if fit_objs is None:
             pca = PCA(n_components=10).fit(tda_mat)
             sc_m = StandardScaler().fit(np.array(means))
             sc_t = StandardScaler().fit(pca.transform(tda_mat))
             fit_objs = {'ft': ft, 'pca': pca, 'sc_m': sc_m, 'sc_t': sc_t}
-        
-        comb = np.hstack((fit_objs['sc_m'].transform(np.array(means)), 
+
+        comb = np.hstack((fit_objs['sc_m'].transform(np.array(means)),
                           fit_objs['sc_t'].transform(fit_objs['pca'].transform(tda_mat))))
         df_copy['tda_compact'] = list(comb[:, :10])
         return df_copy, fit_objs
@@ -90,7 +97,8 @@ def apply_tda_pipeline(train_df, test_df, text_cols):
     test_out, _ = get_features(test_df, fit_objs=objs)
     return train_out, test_out
 
-# --- 3. Configuration ---
+
+# --- Configuration ---
 MODELS_TO_RUN = ["distilgpt2", "gpt2-medium", "TinyLlama", "Qwen"]
 TDA_MODES = [True, False]
 DATASETS = [
@@ -101,42 +109,56 @@ DATASETS = [
 ]
 
 SEED = 42
-EPOCHS = 100
-BATCH_SIZE = 1
+EPOCHS = 100          # Early stopping handles convergence
+BATCH_SIZE = 4        # Increased from 1 -- fewer steps per epoch = much faster
 GRAD_ACCUM = 2
+MAX_SAMPLES = 100     # Per dataset, keeps CPU runs manageable
+
 
 def compute_metrics_final(model, tokenizer, df, text_cols, use_tda):
-    bleu = evaluate.load("bleu")
+    bertscore = evaluate.load("bertscore")
     rouge = evaluate.load("rouge")
     samples = df.sample(min(10, len(df))).to_dict(orient="records")
     preds, refs = [], []
     model.eval()
     for ex in samples:
-        tda_s = " ".join([f"<tda{i}:{v:.3f}>" for i, v in enumerate(ex.get('tda_compact', [0]*10))]) if use_tda else ""
+        tda_s = " ".join([f"<tda{i}:{v:.3f}>" for i, v in enumerate(ex.get("tda_compact", [0]*10))]) if use_tda else ""
         prompt = f"<|user|>: {ex[text_cols[0]]} {tda_s}\n<|assistant|>:"
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
             out = model.generate(**inputs, max_new_tokens=50, do_sample=False)
-        preds.append(tokenizer.decode(out[0], skip_special_tokens=True))
-        refs.append(ex[text_cols[1]])
-    return bleu.compute(predictions=preds, references=refs)['bleu'], rouge.compute(predictions=preds, references=refs)['rougeL']
+        gen_tokens = out[0][inputs["input_ids"].shape[-1]:]
+        preds.append(tokenizer.decode(gen_tokens, skip_special_tokens=True).strip() or " ")
+        refs.append(str(ex[text_cols[1]]).strip() or " ")
+    
+    b_results = bertscore.compute(predictions=preds, references=refs, lang="en")
+    bert_f1 = float(np.mean(b_results["f1"]))
+    return bert_f1, rouge.compute(predictions=preds, references=refs)['rougeL']
 
-# --- 4. Main Loop ---
+
+# --- Results collection ---
+all_results = []
+total_runs = len(DATASETS) * len(MODELS_TO_RUN) * len(TDA_MODES)
+run_num = 0
+
+# --- Main Loop ---
 for ds_info in DATASETS:
     for m_key in MODELS_TO_RUN:
         for tda_on in TDA_MODES:
+            run_num += 1
+            run_start = time.time()
             print("\n" + "="*70)
-            print(f"RUNNING: {m_key} | Dataset: {ds_info['name']} | TDA: {tda_on}")
+            print(f"RUN {run_num}/{total_runs}: {m_key} | Dataset: {ds_info['name']} | TDA: {tda_on}")
             print("="*70)
 
-            m_id = {"distilgpt2":"distilgpt2", "gpt2-medium":"gpt2-medium", 
-                    "TinyLlama":"TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
+            m_id = {"distilgpt2":"distilgpt2", "gpt2-medium":"gpt2-medium",
+                    "TinyLlama":"TinyLlama/TinyLlama-1.1B-Chat-v1.0",
                     "Qwen":"Qwen/Qwen1.5-0.5B-Chat"}[m_key]
-            
+
             df_raw = pd.read_csv(ds_info['path']).dropna(subset=list(ds_info['cols']))
-            df_raw = df_raw.iloc[:100]
+            df_raw = df_raw.iloc[:MAX_SAMPLES]
             train_df, test_df = train_test_split(df_raw, test_size=0.1, random_state=SEED)
-            
+
             if tda_on:
                 train_df, test_df = apply_tda_pipeline(train_df, test_df, ds_info['cols'])
 
@@ -145,7 +167,7 @@ for ds_info in DATASETS:
                 tokenizer.pad_token = tokenizer.eos_token if "Qwen" not in m_key else "<|extra_pad|>"
 
             def format_fn(ex):
-                tda_s = " ".join([f"<tda{i}:{v:.3f}>" for i, v in enumerate(ex.get('tda_compact', [0]*10))]) if tda_on else ""
+                tda_s = " ".join([f"<tda{i}:{v:.3f}>" for i, v in enumerate(ex.get("tda_compact", [0]*10))]) if tda_on else ""
                 u_text = f"{ex[ds_info['cols'][0]]} {tda_s}".strip()
                 ans_text = str(ex[ds_info['cols'][1]]) if ex[ds_info['cols'][1]] is not None else ""
                 if "Chat" in m_id or "Qwen" in m_id:
@@ -167,12 +189,12 @@ for ds_info in DATASETS:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model = AutoModelForCausalLM.from_pretrained(m_id, torch_dtype=torch.float32)
             model = model.to(device)
-            
-            if "Qwen" in m_id: 
+
+            if "Qwen" in m_id:
                 model.resize_token_embeddings(len(tokenizer))
 
             if m_key in ["TinyLlama", "Qwen"]:
-                lora_cfg = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05, 
+                lora_cfg = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05,
                                       target_modules=["q_proj", "v_proj"], task_type="CAUSAL_LM")
                 model = get_peft_model(model, lora_cfg)
                 print("Applied LoRA")
@@ -180,21 +202,57 @@ for ds_info in DATASETS:
             args = TrainingArguments(
                 output_dir=f"./results/{m_key}_{tda_on}",
                 eval_strategy="epoch", save_strategy="epoch", logging_strategy="epoch",
+                load_best_model_at_end=True, metric_for_best_model="eval_loss",
+                save_total_limit=1,
                 num_train_epochs=EPOCHS, per_device_train_batch_size=BATCH_SIZE,
                 gradient_accumulation_steps=GRAD_ACCUM, fp16=torch.cuda.is_available(),
-                load_best_model_at_end=True, report_to="none", disable_tqdm=True
+                report_to="none", disable_tqdm=True
             )
 
             trainer = Trainer(
                 model=model, args=args, train_dataset=train_tok, eval_dataset=test_tok,
-                callbacks=[EarlyStoppingCallback(early_stopping_patience=3), ResearchLogger(EPOCHS)]
+                data_collator=default_data_collator,
+                callbacks=[ResearchLogger(EPOCHS), EarlyStoppingCallback(early_stopping_patience=3)]
             )
-            
+
+            print(f"Training {len(train_tok)} samples, batch_size={BATCH_SIZE}, max_epochs={EPOCHS}")
             trainer.train()
 
             b_val, r_val = compute_metrics_final(model, tokenizer, test_df, ds_info['cols'], tda_on)
-            print(f"Results | BLEU: {b_val:.4f} | ROUGE-L: {r_val:.4f}\n" + "="*70)
+
+            eval_loss = trainer.evaluate()["eval_loss"]
+            ppl = np.exp(eval_loss)
+
+            run_time = time.time() - run_start
+            print(f"Results | BERTScore: {b_val:.4f} | ROUGE-L: {r_val:.4f} | PPL: {ppl:.2f} | Time: {run_time/60:.1f}min")
+            print("="*70)
+
+            all_results.append({
+                'model': m_key,
+                'dataset': ds_info['name'],
+                'tda': tda_on,
+                'bertscore': b_val,
+                'rouge_l': r_val,
+                'perplexity': ppl,
+                'time_min': run_time / 60
+            })
+
+            # Clean up the saved model checkpoints to save disk space
+            import shutil
+            out_dir = f"./results/{m_key}_{tda_on}"
+            if os.path.exists(out_dir):
+                shutil.rmtree(out_dir, ignore_errors=True)
 
             del model, trainer, tokenizer
             gc.collect()
             torch.cuda.empty_cache()
+
+
+# --- Final Results Summary ---
+print("\n\n" + "="*80)
+print("FINAL RESULTS SUMMARY")
+print("="*80)
+results_df = pd.DataFrame(all_results)
+print(results_df.to_string(index=False))
+results_df.to_csv("experiment_results.csv", index=False)
+print("\nResults saved to experiment_results.csv")
