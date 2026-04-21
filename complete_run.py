@@ -156,7 +156,7 @@ for ds_info in DATASETS:
                     "Qwen":"Qwen/Qwen1.5-0.5B-Chat"}[m_key]
 
             df_raw = pd.read_csv(ds_info['path']).dropna(subset=list(ds_info['cols']))
-            df_raw = df_raw.iloc[:MAX_SAMPLES]
+            df_raw = df_raw.iloc[:100]
             train_df, test_df = train_test_split(df_raw, test_size=0.1, random_state=SEED)
 
             if tda_on:
@@ -246,13 +246,3 @@ for ds_info in DATASETS:
             del model, trainer, tokenizer
             gc.collect()
             torch.cuda.empty_cache()
-
-
-# --- Final Results Summary ---
-print("\n\n" + "="*80)
-print("FINAL RESULTS SUMMARY")
-print("="*80)
-results_df = pd.DataFrame(all_results)
-print(results_df.to_string(index=False))
-results_df.to_csv("experiment_results.csv", index=False)
-print("\nResults saved to experiment_results.csv")
